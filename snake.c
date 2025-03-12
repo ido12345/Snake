@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "ML.h"
+
 // amount of horizontal tiles
 #define GRID_HEIGHT 25
 // amount of veritical tiles
@@ -12,7 +14,20 @@
 BYTE SCREEN_GRID[GRID_HEIGHT][GRID_WIDTH];
 
 // remembers what is going on in the game
-BYTE GAME_GRID[GRID_HEIGHT][GRID_WIDTH] = {0};
+BYTE GAME_GRID[GRID_HEIGHT][GRID_WIDTH];
+
+#define GAME_ACTIONS 100
+int actionCounter = 0;
+
+typedef struct Step
+{
+    float *state;
+    int output;
+    float reward;
+} Step;
+
+Network SnakeNN;
+Step *snakeSteps[GAME_ACTIONS];
 
 // height and width of a single tile
 #define TILE_SIZE 50
@@ -25,7 +40,8 @@ BYTE GAME_GRID[GRID_HEIGHT][GRID_WIDTH] = {0};
 
 #define COMP_POINT(p1, p2) (((p1)->x == (p2)->x) && ((p1)->y == (p2)->y))
 
-#define EYE_COLOR (COLORREF) RGB(0, 0, 0)
+#define EYE_COLOR ((COLORREF)RGB(0, 0, 0))
+
 typedef enum TILE_RGB
 {
     NoneTileRGB = (COLORREF)RGB(0, 0, 0),
@@ -90,6 +106,20 @@ int RandomInt(int low, int high)
     return (rand() % (high - low + 1)) + low;
 }
 
+void FreePointList(PointList *p)
+{
+    if (!p)
+        return;
+    if (!p->next)
+    {
+        GlobalFree(p->point);
+        GlobalFree(p);
+    }
+    FreePointList(p->next);
+    GlobalFree(p->point);
+    GlobalFree(p);
+}
+
 void NewApple(void)
 {
     int randomAppleX = RandomInt(1, GRID_WIDTH - 2);
@@ -106,10 +136,11 @@ void NewApple(void)
 
 void InitializeGame(void)
 {
-    SnakePoints = (PointList *)GlobalAlloc(GMEM_FIXED, sizeof(*SnakePoints));
+    ZeroMemory(GAME_GRID, sizeof(GAME_GRID));
+    ZeroMemory(SCREEN_GRID, sizeof(SCREEN_GRID));
+
+    FreePointList(SnakePoints->next);
     SnakePoints->next = NULL;
-    SnakePoints->point = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*SnakePoints->point));
-    ApplePoint = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*ApplePoint));
 
     int randomSnakeX = RandomInt(1, GRID_WIDTH - 2);
     int randomSnakeY = RandomInt(1, GRID_HEIGHT - 2);
@@ -143,12 +174,17 @@ void InitializeGame(void)
     GRID_AT(GAME_GRID, randomAppleX, randomAppleY) = AppleTile;
     GRID_AT(GAME_GRID, randomSnakeX, randomSnakeY) = SnakeTile;
 
+    actionCounter = 0;
     // SnakeDirection = RandomInt(0, 3);
 }
 
 void GameOver(HWND hwnd)
 {
-    PostMessage(hwnd, WM_QUIT, 0, 0);
+    // PostMessage(hwnd, WM_QUIT, 0, 0);
+    // SnakeDirection = 255;
+    InitializeGame();
+    InvalidateRect(hwnd, NULL, FALSE);
+    SendMessage(hwnd, WM_PAINT, 0, 0);
 }
 
 void GameStep(HWND hwnd)
@@ -198,8 +234,8 @@ void GameStep(HWND hwnd)
     //     Snake touches snake
     if (GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) == BorderTile)
     {
+        snakeSteps[actionCounter]->reward = -1.f;
         GameOver(hwnd);
-        // PostMessage(hwnd, WM_CLOSE, 0, 0);
         return;
     }
     if (GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) == SnakeTile)
@@ -207,16 +243,17 @@ void GameStep(HWND hwnd)
         PointList *last = SnakePoints;
         while (last->next)
             last = last->next;
-        if (SnakePoints->point->x != last->point->x || SnakePoints->point->y != last->point->y)
+        if (!(SnakePoints->point->x == last->point->x && SnakePoints->point->y == last->point->y))
         {
+            snakeSteps[actionCounter]->reward = -1.f;
             GameOver(hwnd);
-            // PostMessage(hwnd, WM_CLOSE, 0, 0);
             return;
         }
     }
 
     if (GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) == AppleTile)
     {
+        snakeSteps[actionCounter]->reward = 1.f;
         GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) = SnakeTile;
         NewApple();
     }
@@ -236,13 +273,56 @@ void GameStep(HWND hwnd)
     SendMessage(hwnd, WM_PAINT, 0, 0);
 }
 
+int GetSnakeAction()
+{
+    float *floatGrid = (float *)GlobalAlloc(GMEM_FIXED, sizeof(float) * GRID_HEIGHT * GRID_WIDTH);
+    // float floatGrid[GRID_HEIGHT * GRID_WIDTH];
+
+    for (int i = 0; i < GRID_HEIGHT * GRID_WIDTH; i++)
+    {
+        floatGrid[i] = (float)GAME_GRID[0][i];
+    }
+    Matrix gameGrid = {
+        .rows = 1,
+        .cols = GRID_HEIGHT * GRID_WIDTH,
+        .stride = GRID_HEIGHT * GRID_WIDTH,
+        .es = floatGrid,
+    };
+    mat_copy(NETWORK_IN(SnakeNN), gameGrid);
+    Network_forward(SnakeNN);
+
+    int answer = 0;
+    float ansVal = -1.f;
+
+    for (int i = 0; i < NETWORK_OUT(SnakeNN).cols; i++)
+    {
+        if (MAT_AT(NETWORK_OUT(SnakeNN), 0, i) > ansVal)
+        {
+            ansVal = MAT_AT(NETWORK_OUT(SnakeNN), 0, i);
+            answer = i;
+        }
+    }
+    if (actionCounter < GAME_ACTIONS)
+    {
+        snakeSteps[actionCounter] = (Step *)GlobalAlloc(GMEM_FIXED, sizeof(*snakeSteps));
+        snakeSteps[actionCounter]->state = floatGrid;
+        snakeSteps[actionCounter]->output = answer;
+        snakeSteps[actionCounter]->reward = 0;
+    }
+    printf("Snake wants: %d\n", answer);
+    return answer;
+}
+
 DWORD WINAPI GameLoop(LPVOID lpParam)
 {
-    while (1)
+    HWND hwnd = (HWND)lpParam;
+    while (actionCounter < GAME_ACTIONS)
     {
         if (SnakeDirection != 255)
         {
-            GameStep((HWND)lpParam);
+            SnakeDirection = GetSnakeAction();
+            GameStep(hwnd);
+            actionCounter++;
             Sleep(100);
         }
     }
@@ -272,6 +352,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             case 'D':
                 if (LastDirection != Left)
                     SnakeDirection = Right;
+                break;
+            case VK_SPACE:
+                SnakeDirection = 254;
                 break;
             default:
                 break;
@@ -318,6 +401,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             tileRect.bottom = tileRect.top + TILE_SIZE;
             hBrush = CreateSolidBrush(SnakeTileRGB);
             FillRect(hdc, &tileRect, hBrush);
+            GRID_AT(SCREEN_GRID, lastHead->x, lastHead->y) = SnakeTile;
             DeleteObject(hBrush);
         }
         RECT leftEye;
@@ -375,25 +459,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     }
 }
-// #include <stdio.h>
-// void AttachConsoleToWindow()
-// {
-//     // Allocate a new console window
-//     AllocConsole();
+#include <stdio.h>
+void AttachConsoleToWindow()
+{
+    // Allocate a new console window
+    AllocConsole();
 
-//     // Redirect standard input, output, and error streams
-//     freopen("CONOUT$", "w", stdout);
-//     freopen("CONIN$", "r", stdin);
-//     freopen("CONOUT$", "w", stderr);
+    // Redirect standard input, output, and error streams
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONIN$", "r", stdin);
+    freopen("CONOUT$", "w", stderr);
 
-//     printf("Console attached successfully!\n");
-// }
+    printf("Console attached successfully!\n");
+}
 
 const char mainClassName[] = "SnakeWindowClass";
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     srand((unsigned int)time(NULL));
-    // AttachConsoleToWindow();
+    AttachConsoleToWindow();
 
     WNDCLASSEX wc = {
         .hInstance = hInstance,
@@ -443,7 +527,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
+    SnakePoints = (PointList *)GlobalAlloc(GMEM_FIXED, sizeof(*SnakePoints));
+    SnakePoints->next = NULL;
+    SnakePoints->point = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*SnakePoints->point));
+    ApplePoint = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*ApplePoint));
     InitializeGame();
+
     HANDLE hThread;
     DWORD threadID;
     hThread = CreateThread(
@@ -459,8 +548,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
+    size_t arch[] = {GRID_HEIGHT * GRID_WIDTH, 4};
+    size_t len = sizeof(arch) / sizeof(*arch);
+    SnakeNN = NeuralNetwork(arch, len);
+    Network_rand(SnakeNN, -5, 5);
+
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
+
     MSG msg;
     while (GetMessage(&msg, hwnd, 0, 0) > 0)
     {
