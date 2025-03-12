@@ -4,9 +4,9 @@
 #include <time.h>
 
 // amount of horizontal tiles
-#define GRID_HEIGHT 5
+#define GRID_HEIGHT 25
 // amount of veritical tiles
-#define GRID_WIDTH 5
+#define GRID_WIDTH 25
 
 // remembers what is drawn on the screen
 BYTE SCREEN_GRID[GRID_HEIGHT][GRID_WIDTH];
@@ -15,7 +15,7 @@ BYTE SCREEN_GRID[GRID_HEIGHT][GRID_WIDTH];
 BYTE GAME_GRID[GRID_HEIGHT][GRID_WIDTH] = {0};
 
 // height and width of a single tile
-#define TILE_SIZE 200
+#define TILE_SIZE 50
 // height in pixels
 #define PIXELS_HEIGHT (GRID_HEIGHT * TILE_SIZE)
 // width in pixels
@@ -243,7 +243,7 @@ DWORD WINAPI GameLoop(LPVOID lpParam)
         if (SnakeDirection != 255)
         {
             GameStep((HWND)lpParam);
-            Sleep(500);
+            Sleep(100);
         }
     }
 }
