@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Windows App",
+            "type": "shell",
+            "command": "gcc ${fileBasenameNoExtension}.c -o ${fileBasenameNoExtension}.exe -mwindows",
+            "dependsOn": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
