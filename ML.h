@@ -13,6 +13,21 @@
 #include <Windows.h>
 #endif
 
+// #define SIGMOID -1
+// #define RELU -2
+
+typedef enum ACTIVATION_TYPES
+{
+    SIGMOID,
+    RELU,
+} ActivationType;
+
+typedef struct Activation
+{
+    ActivationType type;
+    float (*activationFunc)(float);
+} Activation;
+
 typedef struct Matrix
 {
     size_t rows;
@@ -26,22 +41,97 @@ typedef struct Network
     Matrix *layers;
     Matrix *weights;
     Matrix *biases;
+    Activation *activations;
     size_t count;
 } Network;
 
-#define MAT_AT(M, i, j) (M).es[(i) * (M).stride + (j)]
+#define MAT_AT(M, i, j) ((M).es[(i) * (M).stride + (j)])
 
 #define PRINT_MAT(m) print_mat((m), #m, 0, "%f")
 #define PRINT_NETWORK(nn) print_Network((nn), #nn, false)
-#define NETWORK_IN(nn) (nn).layers[0]
-#define NETWORK_OUT(nn) (nn).layers[(nn).count]
+#define NETWORK_IN(nn) ((nn).layers[0])
+#define NETWORK_OUT(nn) ((nn).layers[(nn).count])
 
-float sigmoidf(float x);
 float rand_float();
+float sigmoidf(float x);
+float reluf(float x);
+float sigmoidDerivative(float x);
+float reluDerivative(float x);
+void softmaxf(float *dest, float *x, int n);
+float (*getActFunc(ActivationType a))(float);
+char *getActName(ActivationType a);
+float (*getActDerivative(ActivationType a))(float);
 
 float sigmoidf(float x)
 {
     return (1.f / (1.f + expf(-x)));
+}
+
+float reluf(float x)
+{
+    return (x > 0.f ? x : 0.f);
+}
+
+float sigmoidDerivative(float x)
+{
+    return (x) * (1 - x);
+}
+float reluDerivative(float x)
+{
+    return (x > 0.f ? 1.f : 0.f);
+}
+
+void softmaxf(float *dest, float *x, int n)
+{
+    float sum = 0.f;
+    for (int i = 0; i < n; i++)
+    {
+        dest[i] = expf(x[i]);
+        sum += dest[i];
+    }
+    for (int i = 0; i < n; i++)
+    {
+        dest[i] /= sum;
+    }
+}
+
+float (*getActFunc(ActivationType a))(float)
+{
+    switch (a)
+    {
+    case SIGMOID:
+        return sigmoidf;
+    case RELU:
+        return reluf;
+    default:
+        return NULL;
+    }
+}
+
+char *getActName(ActivationType a)
+{
+    switch (a)
+    {
+    case SIGMOID:
+        return "Sigmoid";
+    case RELU:
+        return "Relu";
+    default:
+        return NULL;
+    }
+}
+
+float (*getActDerivative(ActivationType a))(float)
+{
+    switch (a)
+    {
+    case SIGMOID:
+        return sigmoidDerivative;
+    case RELU:
+        return reluDerivative;
+    default:
+        return NULL;
+    }
 }
 
 float rand_float()
@@ -52,6 +142,7 @@ float rand_float()
 Matrix mat_alloc(size_t rows, size_t cols);
 void mat_dot(Matrix dest, Matrix a, Matrix b);
 void mat_sum(Matrix dest, Matrix src);
+void mat_activate(Matrix m, float (*actFunc)(float));
 void mat_sig(Matrix m);
 void mat_rand(Matrix m, float low, float high);
 Matrix mat_row(Matrix src, size_t row);
@@ -59,12 +150,13 @@ Matrix mat_col(Matrix src, size_t col);
 void mat_copy(Matrix dest, Matrix src);
 void mat_clear(Matrix m);
 void print_mat(Matrix m, const char *name, int padding, const char *format);
+void print_activation(Activation a, const char *name, int padding);
 bool mat_same(Matrix a, Matrix b);
 void fwrite_mat(Matrix m, FILE *dest);
 void fread_mat(Matrix m, FILE *src);
 void shuffle_mat(Matrix m);
 
-Network NeuralNetwork(size_t *arch, size_t count);
+Network NeuralNetwork(size_t *layers, size_t count, ActivationType *activations);
 void print_Network(Network nn, const char *name, bool showLayers);
 void Network_rand(Network nn, float low, float high);
 float Network_cost(Network nn, Matrix in, Matrix out);
@@ -101,7 +193,7 @@ void mat_shuffle_rows(Matrix m)
 
 size_t *Network_getArch(Network nn)
 {
-    size_t *arch = malloc(sizeof(size_t) * (nn.count + 1));
+    size_t *arch = malloc(sizeof(*arch) * (nn.count + 1));
     for (size_t i = 0; i < nn.count; i++)
     {
         arch[i] = nn.weights[i].rows;
@@ -273,6 +365,12 @@ void print_mat(Matrix m, const char *name, int padding, const char *format)
     printf("%*s]\n", padding, "");
 }
 
+void print_activation(Activation a, const char *name, int padding)
+{
+    char *actName = getActName(a.type);
+    printf("%*s%s = %s\n", padding, "", name, actName);
+}
+
 void mat_dot(Matrix dest, Matrix a, Matrix b)
 {
     if (a.cols != b.rows)
@@ -317,6 +415,17 @@ void mat_sig(Matrix m)
         for (size_t j = 0; j < m.cols; j++)
         {
             MAT_AT(m, i, j) = sigmoidf(MAT_AT(m, i, j));
+        }
+    }
+}
+
+void mat_activate(Matrix m, float (*actFunc)(float))
+{
+    for (size_t i = 0; i < m.rows; i++)
+    {
+        for (size_t j = 0; j < m.cols; j++)
+        {
+            MAT_AT(m, i, j) = actFunc(MAT_AT(m, i, j));
         }
     }
 }
@@ -409,20 +518,33 @@ bool Network_same(Network a, Network b)
     return true;
 }
 
-Network NeuralNetwork(size_t *arch, size_t count)
+Network NeuralNetwork(size_t *layers, size_t count, ActivationType *activations)
 {
     Network nn;
     nn.count = count - 1;
-    nn.layers = malloc(sizeof(Matrix) * count);
-    nn.weights = malloc(sizeof(Matrix) * nn.count);
-    nn.biases = malloc(sizeof(Matrix) * nn.count);
+    nn.layers = malloc(sizeof(*nn.layers) * nn.count + 1);
+    nn.weights = malloc(sizeof(*nn.weights) * nn.count);
+    nn.biases = malloc(sizeof(*nn.biases) * nn.count);
+    if (activations != NULL)
+    {
+        nn.activations = malloc(sizeof(*nn.activations) * nn.count);
+    }
+    else
+    {
+        nn.activations = NULL;
+    }
 
-    nn.layers[0] = mat_alloc(1, arch[0]);
+    nn.layers[0] = mat_alloc(1, layers[0]);
     for (size_t i = 0; i < nn.count; i++)
     {
-        nn.weights[i] = mat_alloc(arch[i], arch[i + 1]);
-        nn.biases[i] = mat_alloc(1, arch[i + 1]);
-        nn.layers[i + 1] = mat_alloc(1, arch[i + 1]);
+        nn.weights[i] = mat_alloc(layers[i], layers[i + 1]);
+        nn.biases[i] = mat_alloc(1, layers[i + 1]);
+        if (activations != NULL)
+        {
+            nn.activations[i].type = activations[i];
+            nn.activations[i].activationFunc = getActFunc(activations[i]);
+        }
+        nn.layers[i + 1] = mat_alloc(1, layers[i + 1]);
     }
     return nn;
 }
@@ -442,6 +564,11 @@ void print_Network(Network nn, const char *name, bool showLayers)
         print_mat(nn.weights[i], buff, 4, "%f");
         snprintf(buff, sizeof(buff), "%s.biases[%zu]", name, i);
         print_mat(nn.biases[i], buff, 4, "%f");
+        if (nn.activations)
+        {
+            snprintf(buff, sizeof(buff), "%s.activations[%zu]", name, i);
+            print_activation(nn.activations[i], buff, 4);
+        }
     }
     if (showLayers)
     {
@@ -502,7 +629,10 @@ void Network_forward(Network nn)
     {
         mat_dot(nn.layers[i + 1], nn.layers[i], nn.weights[i]);
         mat_sum(nn.layers[i + 1], nn.biases[i]);
-        mat_sig(nn.layers[i + 1]);
+        if (nn.activations)
+        {
+            mat_activate(nn.layers[i + 1], nn.activations[i].activationFunc);
+        }
     }
 }
 
@@ -575,7 +705,6 @@ void Network_backprop(Network nn, Network g, Matrix in, Matrix out)
 
         for (size_t j = 0; j <= g.count; j++)
         {
-
             mat_clear(g.layers[j]);
         }
 
@@ -598,21 +727,26 @@ void Network_backprop(Network nn, Network g, Matrix in, Matrix out)
         {
             for (size_t j = 0; j < nn.layers[l].cols; j++)
             {
-                float a = MAT_AT(nn.layers[l], 0, j);
-                float da = MAT_AT(g.layers[l], 0, j);
-                float qa = a * (1 - a);
-                float fullD = (s * da * qa);
-                MAT_AT(g.biases[l - 1], 0, j) += (fullD);
+                float resultAhead = MAT_AT(nn.layers[l], 0, j);
+                float aheadDerivative = MAT_AT(g.layers[l], 0, j);
+                // float qa = a * (1 - a);
+                float activationDerivative = 1.f;
+                if (nn.activations)
+                {
+                    activationDerivative = getActDerivative(nn.activations[l].type)(resultAhead);
+                }
+                float fullDerivative = (s * aheadDerivative * activationDerivative);
+                MAT_AT(g.biases[l - 1], 0, j) += (fullDerivative);
 
                 for (size_t k = 0; k < nn.layers[l - 1].cols; k++)
                 {
                     // j - weights matrix col
                     // k = weights matrix row
                     float pa = MAT_AT(nn.layers[l - 1], 0, k);
-                    MAT_AT(g.weights[l - 1], k, j) += (fullD * pa);
+                    MAT_AT(g.weights[l - 1], k, j) += (fullDerivative * pa);
 
                     float pw = MAT_AT(nn.weights[l - 1], k, j);
-                    MAT_AT(g.layers[l - 1], 0, k) += (fullD * pw);
+                    MAT_AT(g.layers[l - 1], 0, k) += (fullDerivative * pw);
                 }
             }
         }

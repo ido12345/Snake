@@ -26,8 +26,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "c:/Users/idosw/C Projects/Windows/Mine/TextEditor",
-      "program": "c:/Users/idosw/C Projects/Windows/Mine/TextEditor/build/Debug/outDebug",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/${fileBasenameNoExtension}.exe",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [

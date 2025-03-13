@@ -10,13 +10,15 @@
 // amount of veritical tiles
 #define GRID_WIDTH 25
 
+#define GRID_LEN (GRID_HEIGHT * GRID_WIDTH)
+
 // remembers what is drawn on the screen
 BYTE SCREEN_GRID[GRID_HEIGHT][GRID_WIDTH];
 
 // remembers what is going on in the game
 BYTE GAME_GRID[GRID_HEIGHT][GRID_WIDTH];
 
-#define GAME_ACTIONS 100
+#define GAME_STEPS 100
 int actionCounter = 0;
 
 typedef struct Step
@@ -27,7 +29,7 @@ typedef struct Step
 } Step;
 
 Network SnakeNN;
-Step *snakeSteps[GAME_ACTIONS];
+Step *snakeSteps[GAME_STEPS];
 
 // height and width of a single tile
 #define TILE_SIZE 50
@@ -114,6 +116,7 @@ void FreePointList(PointList *p)
     {
         GlobalFree(p->point);
         GlobalFree(p);
+        return;
     }
     FreePointList(p->next);
     GlobalFree(p->point);
@@ -173,15 +176,13 @@ void InitializeGame(void)
 
     GRID_AT(GAME_GRID, randomAppleX, randomAppleY) = AppleTile;
     GRID_AT(GAME_GRID, randomSnakeX, randomSnakeY) = SnakeTile;
-
-    actionCounter = 0;
-    // SnakeDirection = RandomInt(0, 3);
 }
 
 void GameOver(HWND hwnd)
 {
     // PostMessage(hwnd, WM_QUIT, 0, 0);
     // SnakeDirection = 255;
+    // ReinforcementLearning();
     InitializeGame();
     InvalidateRect(hwnd, NULL, FALSE);
     SendMessage(hwnd, WM_PAINT, 0, 0);
@@ -234,7 +235,7 @@ void GameStep(HWND hwnd)
     //     Snake touches snake
     if (GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) == BorderTile)
     {
-        snakeSteps[actionCounter]->reward = -1.f;
+        snakeSteps[actionCounter]->reward = -1.0f;
         GameOver(hwnd);
         return;
     }
@@ -245,7 +246,7 @@ void GameStep(HWND hwnd)
             last = last->next;
         if (!(SnakePoints->point->x == last->point->x && SnakePoints->point->y == last->point->y))
         {
-            snakeSteps[actionCounter]->reward = -1.f;
+            snakeSteps[actionCounter]->reward = -1.0f;
             GameOver(hwnd);
             return;
         }
@@ -253,7 +254,7 @@ void GameStep(HWND hwnd)
 
     if (GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) == AppleTile)
     {
-        snakeSteps[actionCounter]->reward = 1.f;
+        snakeSteps[actionCounter]->reward = 1.0f;
         GRID_AT(GAME_GRID, SnakePoints->point->x, SnakePoints->point->y) = SnakeTile;
         NewApple();
     }
@@ -273,19 +274,25 @@ void GameStep(HWND hwnd)
     SendMessage(hwnd, WM_PAINT, 0, 0);
 }
 
+void ReinforcementLearning()
+{
+    for (int i = 0; i < GAME_STEPS; i++)
+    {
+    }
+}
+
 int GetSnakeAction()
 {
-    float *floatGrid = (float *)GlobalAlloc(GMEM_FIXED, sizeof(float) * GRID_HEIGHT * GRID_WIDTH);
-    // float floatGrid[GRID_HEIGHT * GRID_WIDTH];
+    float *floatGrid = (float *)GlobalAlloc(GMEM_FIXED, sizeof(float) * GRID_LEN);
 
-    for (int i = 0; i < GRID_HEIGHT * GRID_WIDTH; i++)
+    for (int i = 0; i < GRID_LEN; i++)
     {
         floatGrid[i] = (float)GAME_GRID[0][i];
     }
     Matrix gameGrid = {
         .rows = 1,
-        .cols = GRID_HEIGHT * GRID_WIDTH,
-        .stride = GRID_HEIGHT * GRID_WIDTH,
+        .cols = GRID_LEN,
+        .stride = GRID_LEN,
         .es = floatGrid,
     };
     mat_copy(NETWORK_IN(SnakeNN), gameGrid);
@@ -298,32 +305,63 @@ int GetSnakeAction()
     {
         if (MAT_AT(NETWORK_OUT(SnakeNN), 0, i) > ansVal)
         {
-            ansVal = MAT_AT(NETWORK_OUT(SnakeNN), 0, i);
-            answer = i;
+            if ((i == Up && LastDirection == Down) ||
+                (i == Down && LastDirection == Up) ||
+                (i == Left && LastDirection == Right) ||
+                (i == Right && LastDirection == Left))
+            {
+                // invalid move
+            }
+            else
+            {
+                ansVal = MAT_AT(NETWORK_OUT(SnakeNN), 0, i);
+                answer = i;
+            }
         }
     }
-    if (actionCounter < GAME_ACTIONS)
+    if (actionCounter < GAME_STEPS)
     {
-        snakeSteps[actionCounter] = (Step *)GlobalAlloc(GMEM_FIXED, sizeof(*snakeSteps));
-        snakeSteps[actionCounter]->state = floatGrid;
+        for (int i = 0; i < GRID_LEN; i++)
+        {
+            snakeSteps[actionCounter]->state[i] = floatGrid[i];
+        }
         snakeSteps[actionCounter]->output = answer;
-        snakeSteps[actionCounter]->reward = 0;
     }
-    printf("Snake wants: %d\n", answer);
+    GlobalFree(floatGrid);
+    printf("Snake wants:\t%d\n", answer);
     return answer;
 }
 
 DWORD WINAPI GameLoop(LPVOID lpParam)
 {
     HWND hwnd = (HWND)lpParam;
-    while (actionCounter < GAME_ACTIONS)
+    while (1)
     {
-        if (SnakeDirection != 255)
+        if (actionCounter < GAME_STEPS)
         {
-            SnakeDirection = GetSnakeAction();
-            GameStep(hwnd);
-            actionCounter++;
-            Sleep(100);
+
+            if (SnakeDirection != 255)
+            {
+                SnakeDirection = GetSnakeAction();
+                GameStep(hwnd);
+                printf("Reward is:\t%.2f\n\n", snakeSteps[actionCounter]->reward);
+                actionCounter++;
+                Sleep(2);
+            }
+        }
+        else
+        {
+            ReinforcementLearning();
+            for (int i = 0; i < GAME_STEPS; i++)
+            {
+                for (int j = 0; j < GRID_LEN; j++)
+                {
+                    snakeSteps[i]->state[j] = 0;
+                }
+                snakeSteps[i]->output = 0;
+                snakeSteps[i]->reward = 0;
+            }
+            actionCounter = 0;
         }
     }
 }
@@ -354,7 +392,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     SnakeDirection = Right;
                 break;
             case VK_SPACE:
-                SnakeDirection = 254;
+                SnakeDirection = 255;
                 break;
             default:
                 break;
@@ -469,8 +507,6 @@ void AttachConsoleToWindow()
     freopen("CONOUT$", "w", stdout);
     freopen("CONIN$", "r", stdin);
     freopen("CONOUT$", "w", stderr);
-
-    printf("Console attached successfully!\n");
 }
 
 const char mainClassName[] = "SnakeWindowClass";
@@ -531,6 +567,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     SnakePoints->next = NULL;
     SnakePoints->point = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*SnakePoints->point));
     ApplePoint = (Point *)GlobalAlloc(GMEM_FIXED, sizeof(*ApplePoint));
+    for (int i = 0; i < GAME_STEPS; i++)
+    {
+        snakeSteps[i] = (Step *)GlobalAlloc(GMEM_FIXED, sizeof(*snakeSteps[i]));
+        snakeSteps[i]->state = (float *)GlobalAlloc(GMEM_FIXED, GRID_LEN * sizeof(*snakeSteps[i]->state));
+        snakeSteps[i]->output = 0;
+        snakeSteps[i]->reward = 0.f;
+    }
     InitializeGame();
 
     HANDLE hThread;
@@ -548,10 +591,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
-    size_t arch[] = {GRID_HEIGHT * GRID_WIDTH, 4};
-    size_t len = sizeof(arch) / sizeof(*arch);
-    SnakeNN = NeuralNetwork(arch, len);
-    Network_rand(SnakeNN, -5, 5);
+    size_t layers[] = {GRID_LEN, 100, 4};
+    size_t len = sizeof(layers) / sizeof(*layers);
+    ActivationType acts[] = {SIGMOID, SIGMOID};
+    SnakeNN = NeuralNetwork(layers, len, NULL);
+    Network_rand(SnakeNN, -25, 25);
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
