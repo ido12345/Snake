@@ -73,14 +73,14 @@ float (*getActFunc(ActivationType a))(float);
 char *getActName(ActivationType a);
 float (*getActDerivative(ActivationType a))(float);
 
-// float safe_expf(float x)
-// {
-//     if (x > 88.72f)
-//         return expf(88.72f); // Prevent overflow
-//     if (x < -88.72f)
-//         return 0.0f; // Underflow case
-//     return expf(x);
-// }
+float safe_expf(float x)
+{
+    if (x > 88.72f)
+        return expf(88.72f); // Prevent overflow
+    if (x < -88.72f)
+        return 0.0f; // Underflow case
+    return expf(x);
+}
 
 float sigmoidf(float x)
 {
@@ -94,7 +94,7 @@ float reluf(float x)
 
 float leakyreluf(float x)
 {
-    return (x > 0.f ? 0.01f * x : 0.f);
+    return (x > 0.f ? x : 0.01f * x);
 }
 
 float sigmoidDerivative(float x)
@@ -108,7 +108,7 @@ float reluDerivative(float x)
 
 float leakyreluDerivative(float x)
 {
-    return (x > 0.f ? 0.01f : 0.f);
+    return (x > 0.f ? 1 : 0.01f);
 }
 
 void softmaxf(float *dest, float *x, int n)
@@ -127,7 +127,7 @@ void softmaxf(float *dest, float *x, int n)
     float sum = 0.f;
     for (int i = 0; i < n; i++)
     {
-        dest[i] = exp(x[i] - max_x); // Subtract max_x for numerical stability
+        dest[i] = safe_expf(x[i] - max_x); // Subtract max_x for numerical stability
         sum += dest[i];
     }
 
@@ -683,7 +683,7 @@ float Network_cross_entropy_cost(Network nn, Step *steps[], size_t stepAmount)
         Step temp = *steps[i];
         if (steps[i]->reward != 0)
         {
-            float logP = -log(steps[i]->probability);
+            float logP = -logf(steps[i]->probability);
             cost += steps[i]->reward * logP;
         }
     }
@@ -696,7 +696,7 @@ void Network_forward(Network nn)
     {
         mat_dot(nn.layers[i + 1], nn.layers[i], nn.weights[i]);
         mat_sum(nn.layers[i + 1], nn.biases[i]);
-        if (nn.activations)
+        if (nn.activations && nn.activations[i].activationFunc)
         {
             mat_activate(nn.layers[i + 1], nn.activations[i].activationFunc);
         }
@@ -833,7 +833,7 @@ void Network_backprop(Network nn, Network g, Matrix in, Matrix out)
                 float outputAhead = MAT_AT(nn.layers[l], 0, j);
                 float derivativeAhead = MAT_AT(g.layers[l], 0, j);
                 float activationDerivative = 1.f;
-                if (nn.activations)
+                if (nn.activations && nn.activations[l].activationFunc)
                 {
                     activationDerivative = getActDerivative(nn.activations[l].type)(outputAhead);
                 }
@@ -921,7 +921,7 @@ void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size
                 float outputAhead = MAT_AT(nn.layers[l], 0, j);
                 float derivativeAhead = MAT_AT(g.layers[l], 0, j);
                 float activationDerivative = 1.f;
-                if (nn.activations)
+                if (nn.activations && nn.activations[l - 1].activationFunc)
                 {
                     activationDerivative = getActDerivative(nn.activations[l - 1].type)(outputAhead);
                 }
@@ -978,12 +978,9 @@ void Network_learn(Network nn, Network g, float rate)
         }
 
         Matrix biases = nn.biases[i];
-        for (size_t j = 0; j < biases.rows; j++)
+        for (size_t k = 0; k < biases.cols; k++)
         {
-            for (size_t k = 0; k < biases.cols; k++)
-            {
-                MAT_AT(biases, j, k) -= rate * MAT_AT(g.biases[i], j, k);
-            }
+            MAT_AT(biases, 0, k) -= rate * MAT_AT(g.biases[i], 0, k);
         }
     }
 }
