@@ -18,6 +18,7 @@ typedef enum ACTIVATION_TYPES
     SIGMOID,
     RELU,
     LEAKYRELU,
+    SOFTMAX,
 } ActivationType;
 
 typedef struct Activation
@@ -60,7 +61,7 @@ typedef struct Network
 #define NETWORK_IN(nn) ((nn).layers[0])
 #define NETWORK_OUT(nn) ((nn).layers[(nn).count])
 
-#define SOFTMAX_OUTPUTS(nn) (softmaxf(NETWORK_OUT(nn).es, NETWORK_OUT(nn).es, NETWORK_OUT(nn).cols))
+#define SOFTMAX_OUTPUTS(nn) (softmaxf(NETWORK_OUT(nn)))
 
 float rand_float();
 float sigmoidf(float x);
@@ -68,7 +69,7 @@ float reluf(float x);
 float leakyreluf(float x);
 float sigmoidDerivative(float x);
 float reluDerivative(float x);
-void softmaxf(float *dest, float *x, int n);
+void softmaxf(Matrix m);
 float (*getActFunc(ActivationType a))(float);
 char *getActName(ActivationType a);
 float (*getActDerivative(ActivationType a))(float);
@@ -101,6 +102,7 @@ float sigmoidDerivative(float x)
 {
     return (x) * (1 - x);
 }
+
 float reluDerivative(float x)
 {
     return (x > 0.f ? 1.f : 0.f);
@@ -111,30 +113,20 @@ float leakyreluDerivative(float x)
     return (x > 0.f ? 1 : 0.01f);
 }
 
-void softmaxf(float *dest, float *x, int n)
+void softmaxf(Matrix m)
 {
-    // Step 1: Find the maximum value in x
-    float max_x = x[0];
-    for (int i = 1; i < n; i++)
-    {
-        if (x[i] > max_x)
-        {
-            max_x = x[i];
-        }
-    }
-
-    // Step 2: Compute exponentials and their sum
     float sum = 0.f;
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < m.rows; i++)
     {
-        dest[i] = safe_expf(x[i] - max_x); // Subtract max_x for numerical stability
-        sum += dest[i];
-    }
-
-    // Step 3: Normalize to get probabilities
-    for (int i = 0; i < n; i++)
-    {
-        dest[i] /= sum;
+        for (int j = 0; j < m.cols; j++)
+        {
+            MAT_AT(m, i, j) = expf(MAT_AT(m, i, j));
+            sum += MAT_AT(m, i, j);
+        }
+        for (int j = 0; j < m.cols; j++)
+        {
+            MAT_AT(m, i, j) /= sum;
+        }
     }
 }
 
@@ -163,6 +155,8 @@ char *getActName(ActivationType a)
         return "ReLU";
     case LEAKYRELU:
         return "LeakyReLU";
+    case SOFTMAX:
+        return "Softmax";
     default:
         return NULL;
     }
@@ -203,7 +197,8 @@ void print_activation(Activation a, const char *name, int padding);
 bool mat_same(Matrix a, Matrix b);
 void fwrite_mat(Matrix m, FILE *dest);
 void fread_mat(Matrix m, FILE *src);
-void shuffle_mat(Matrix m);
+void mat_shuffle_rows(Matrix m);
+void xavier_init(Matrix m);
 
 Network NeuralNetwork(size_t *layers, size_t count, ActivationType *activations);
 void print_Network(Network nn, const char *name, bool showLayers);
@@ -216,12 +211,14 @@ void Network_policy_gradient_diff(Network nn, Network g, float eps, Step *steps[
 void Network_backprop(Network nn, Network g, Matrix in, Matrix out);
 void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size_t stepAmount);
 void Network_clear(Network nn);
-void Network_learn(Network nn, Network g, float rate);
+void Network_gradient_descent(Network nn, Network g, float rate);
+void Network_gradient_ascent(Network nn, Network g, float rate);
 bool Network_same(Network a, Network b);
 void Network_save(Network nn, const char *fileName);
 void Network_load(Network nn, const char *fileName);
 size_t *Network_getArch(Network nn);
 bool Network_cmpArch(Network nn, size_t *arch, size_t archLen);
+void Network_xavier_init(Network nn);
 
 const char fileExtension[] = ".netw";
 const char fileHeader[] = "nn";
@@ -243,9 +240,15 @@ void mat_shuffle_rows(Matrix m)
     }
 }
 
+void xavier_init(Matrix m)
+{
+    float limit = sqrtf(6.f / (m.rows + m.cols));
+    mat_rand(m, -limit, limit);
+}
+
 size_t *Network_getArch(Network nn)
 {
-    size_t *arch = malloc(sizeof(*arch) * (nn.count + 1));
+    size_t *arch = (size_t *)malloc(sizeof(*arch) * (nn.count + 1));
     for (size_t i = 0; i < nn.count; i++)
     {
         arch[i] = nn.weights[i].rows;
@@ -267,6 +270,15 @@ bool Network_cmpArch(Network nn, size_t *arch, size_t archLen)
     if (arch[nn.count] != NETWORK_OUT(nn).rows)
         return false;
     return true;
+}
+
+void Network_xavier_init(Network nn)
+{
+    for (size_t i = 0; i < nn.count; i++)
+    {
+        xavier_init(nn.weights[i]);
+        xavier_init(nn.biases[i]);
+    }
 }
 
 void Network_save(Network nn, const char *fileName)
@@ -544,7 +556,7 @@ Matrix mat_alloc(size_t rows, size_t cols)
     m.rows = rows;
     m.cols = cols;
     m.stride = cols;
-    m.es = calloc(sizeof(m.es) * rows * cols, 1);
+    m.es = (float *)calloc(sizeof(m.es) * rows * cols, 1);
     return m;
 }
 
@@ -574,12 +586,12 @@ Network NeuralNetwork(size_t *layers, size_t count, ActivationType *activations)
 {
     Network nn;
     nn.count = count - 1;
-    nn.layers = malloc(sizeof(*nn.layers) * nn.count + 1);
-    nn.weights = malloc(sizeof(*nn.weights) * nn.count);
-    nn.biases = malloc(sizeof(*nn.biases) * nn.count);
+    nn.layers = (Matrix *)malloc(sizeof(*nn.layers) * nn.count + 1);
+    nn.weights = (Matrix *)malloc(sizeof(*nn.weights) * nn.count);
+    nn.biases = (Matrix *)malloc(sizeof(*nn.biases) * nn.count);
     if (activations != NULL)
     {
-        nn.activations = malloc(sizeof(*nn.activations) * nn.count);
+        nn.activations = (Activation *)malloc(sizeof(*nn.activations) * nn.count);
     }
     else
     {
@@ -680,11 +692,10 @@ float Network_cross_entropy_cost(Network nn, Step *steps[], size_t stepAmount)
     float cost = 0.f;
     for (size_t i = 0; i < stepAmount; i++)
     {
-        Step temp = *steps[i];
-        if (steps[i]->reward != 0)
+        float prob = steps[i]->probability;
+        if (steps[i]->reward != 0 && prob > 0)
         {
-            float logP = -logf(steps[i]->probability);
-            cost += steps[i]->reward * logP;
+            cost += steps[i]->reward * -log(prob);
         }
     }
     return cost;
@@ -696,9 +707,16 @@ void Network_forward(Network nn)
     {
         mat_dot(nn.layers[i + 1], nn.layers[i], nn.weights[i]);
         mat_sum(nn.layers[i + 1], nn.biases[i]);
-        if (nn.activations && nn.activations[i].activationFunc)
+        if (nn.activations)
         {
-            mat_activate(nn.layers[i + 1], nn.activations[i].activationFunc);
+            if (nn.activations[i].type == SOFTMAX)
+            {
+                softmaxf(nn.layers[i + 1]);
+            }
+            else if (nn.activations[i].activationFunc)
+            {
+                mat_activate(nn.layers[i + 1], nn.activations[i].activationFunc);
+            }
         }
     }
 }
@@ -835,7 +853,11 @@ void Network_backprop(Network nn, Network g, Matrix in, Matrix out)
                 float activationDerivative = 1.f;
                 if (nn.activations && nn.activations[l].activationFunc)
                 {
-                    activationDerivative = getActDerivative(nn.activations[l].type)(outputAhead);
+                    float (*derivativeFunc)(float) = getActDerivative(nn.activations[l].type);
+                    if (derivativeFunc)
+                    {
+                        activationDerivative = derivativeFunc(outputAhead);
+                    }
                 }
                 float fullDerivative = (s * derivativeAhead * activationDerivative);
                 MAT_AT(g.biases[l - 1], 0, j) += (fullDerivative);
@@ -883,18 +905,17 @@ void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size
 
     Network_clear(g);
 
-    float cumulativeRewards[n];
-    cumulativeRewards[n - 1] = steps[n - 1]->reward;
-    for (int i = n - 2; i >= 0; i--)
-    {
-        cumulativeRewards[i] = steps[i]->reward + 0.9 * cumulativeRewards[i + 1];
-    }
+    // float cumulativeRewards[n];
+    // cumulativeRewards[n - 1] = steps[n - 1]->reward;
+    // for (int i = n - 2; i >= 0; i--)
+    // {
+    //     cumulativeRewards[i] = steps[i]->reward + 0.9 * cumulativeRewards[i + 1];
+    // }
 
     for (size_t i = 0; i < n; i++)
     {
         mat_copy(NETWORK_IN(nn), steps[i]->state);
         Network_forward(nn);
-        SOFTMAX_OUTPUTS(nn);
 
         for (size_t j = 0; j <= g.count; j++)
         {
@@ -904,14 +925,7 @@ void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size
         for (size_t j = 0; j < NETWORK_OUT(nn).cols; j++)
         {
             float P_k = MAT_AT(NETWORK_OUT(nn), 0, j);
-            if (steps[i]->action == j)
-            {
-                MAT_AT(NETWORK_OUT(g), 0, j) = (P_k - 1) * cumulativeRewards[i];
-            }
-            else
-            {
-                MAT_AT(NETWORK_OUT(g), 0, j) = P_k * cumulativeRewards[i];
-            }
+            MAT_AT(NETWORK_OUT(g), 0, j) = (P_k - (steps[i]->action == j ? 1 : 0)) * steps[i]->reward;
         }
 
         for (size_t l = nn.count; l > 0; l--)
@@ -921,9 +935,13 @@ void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size
                 float outputAhead = MAT_AT(nn.layers[l], 0, j);
                 float derivativeAhead = MAT_AT(g.layers[l], 0, j);
                 float activationDerivative = 1.f;
-                if (nn.activations && nn.activations[l - 1].activationFunc)
+                if (nn.activations && nn.activations[l].activationFunc)
                 {
-                    activationDerivative = getActDerivative(nn.activations[l - 1].type)(outputAhead);
+                    float (*derivativeFunc)(float) = getActDerivative(nn.activations[l].type);
+                    if (derivativeFunc)
+                    {
+                        activationDerivative = derivativeFunc(outputAhead);
+                    }
                 }
                 float fullDerivative = (derivativeAhead * activationDerivative);
                 MAT_AT(g.biases[l - 1], 0, j) += (fullDerivative);
@@ -961,7 +979,7 @@ void Network_policy_gradient_backprop(Network nn, Network g, Step *steps[], size
     }
 }
 
-void Network_learn(Network nn, Network g, float rate)
+void Network_gradient_descent(Network nn, Network g, float rate)
 {
     if (!Network_same(nn, g))
         return;
@@ -981,6 +999,30 @@ void Network_learn(Network nn, Network g, float rate)
         for (size_t k = 0; k < biases.cols; k++)
         {
             MAT_AT(biases, 0, k) -= rate * MAT_AT(g.biases[i], 0, k);
+        }
+    }
+}
+
+void Network_gradient_ascent(Network nn, Network g, float rate)
+{
+    if (!Network_same(nn, g))
+        return;
+
+    for (size_t i = 0; i < nn.count; i++)
+    {
+        Matrix weights = nn.weights[i];
+        for (size_t j = 0; j < weights.rows; j++)
+        {
+            for (size_t k = 0; k < weights.cols; k++)
+            {
+                MAT_AT(weights, j, k) += rate * MAT_AT(g.weights[i], j, k);
+            }
+        }
+
+        Matrix biases = nn.biases[i];
+        for (size_t k = 0; k < biases.cols; k++)
+        {
+            MAT_AT(biases, 0, k) += rate * MAT_AT(g.biases[i], 0, k);
         }
     }
 }
