@@ -4,7 +4,7 @@
         {
             "label": "Build Windows App",
             "type": "shell",
-            "command": "gcc ${fileBasenameNoExtension}.c -o ${fileBasenameNoExtension}.exe -mwindows",
+            "command": "gcc -g ${fileBasenameNoExtension}.c -o ${fileBasenameNoExtension}.exe -mwindows",
             "dependsOn": [],
             "group": {
                 "kind": "build",
